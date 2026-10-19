@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from dataset import ALERTS, BACKUPS, FIREWALL_LOGS, HOSTS, METRIC_PROFILES, RUNBOOKS, SNAPSHOT, history
 
 mcp = FastMCP(
-    'Cortex · V2S laboratorio',
+    'Zabbix V2S',
     instructions='DEMO: todos los datos son sintéticos, no son infraestructura real de V2S. '
     'Solo lectura. Cita IDs, fechas y valores. No presentes correlaciones como causas probadas, '
     'ni tendencias históricas como predicciones de fallo. No puedes ejecutar cambios ni resolver alertas. '

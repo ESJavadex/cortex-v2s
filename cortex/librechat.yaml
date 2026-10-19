@@ -1,7 +1,7 @@
 version: 1.3.6
 cache: true
 interface:
-  customWelcome: "Cortex · V2S Operations"
+  customWelcome: "Cortex · Operaciones V2S"
   endpointsMenu: false
   modelSelect: false
   parameters: false
@@ -22,12 +22,14 @@ endpoints:
       apiKey: "${OPENROUTER_KEY}"
       baseURL: https://openrouter.ai/api/v1
       models:
-        default: ["google/gemini-2.5-flash", "openai/gpt-4.1-mini"]
+        default: ["openai/gpt-6-luna"]
         fetch: false
       titleConvo: false
       modelDisplayLabel: Cortex
       iconURL: /assets/cortex-mark.svg
-      dropParams: [stop]
+      dropParams: [stop, temperature, top_p, topP, frequency_penalty, frequencyPenalty, presence_penalty, presencePenalty]
+      addParams:
+        reasoning_effort: none
       headers:
         X-Title: Cortex V2S Demo
 mcpSettings:
@@ -35,6 +37,8 @@ mcpSettings:
     - v2s-mock
 mcpServers:
   v2s:
+    title: Zabbix V2S
+    description: Monitorización Zabbix de laboratorio con datos sintéticos
     type: streamable-http
     url: http://v2s-mock:8000/mcp
     timeout: 60000
@@ -42,7 +46,7 @@ mcpServers:
     serverInstructions: true
     chatMenu: true
     startup: true
-    iconPath: /assets/cortex-mark.svg
+    iconPath: /assets/zabbix-logo.svg
 modelSpecs:
   enforce: true
   prioritize: true
@@ -55,13 +59,14 @@ modelSpecs:
       mcpServers: [v2s]
       preset:
         endpoint: Cortex
-        model: openai/gpt-4.1-mini
-        temperature: 0.2
+        model: openai/gpt-6-luna
+        reasoning_effort: none
+        modelLabel: GPT-6 Luna
         greeting: "Tu infraestructura, con contexto. ¿Qué revisamos hoy?"
         promptPrefix: >-
           Eres Cortex, copiloto de operaciones de V2S. Responde en español, con precisión y brevedad.
           Este entorno es una DEMO con datos SINTÉTICOS, nunca infraestructura real.
-          Para cualquier consulta sobre infraestructura usa SIEMPRE las herramientas MCP v2s antes de responder.
+          Para cualquier consulta sobre infraestructura usa SIEMPRE las herramientas MCP de Zabbix antes de responder.
           Identifica los datos como sintéticos en cada análisis. Cita IDs de alertas, hosts, métricas, ventanas temporales y runbooks que soportan cada conclusión.
           Distingue hechos observados, correlaciones e hipótesis; no afirmes causas raíz ni predicciones de fallo sin evidencia suficiente.
           Para correlacionar almacenamiento y copias, debes consultar zabbix_inventory, zabbix_alerts, backup_jobs, zabbix_history de ocupación y latencia del host de almacenamiento, service_dependencies y search_runbooks antes de concluir.
@@ -76,11 +81,12 @@ modelSpecs:
       mcpServers: [v2s]
       preset:
         endpoint: Cortex
-        model: openai/gpt-4.1-mini
-        temperature: 0.2
+        model: openai/gpt-6-luna
+        reasoning_effort: none
+        modelLabel: GPT-6 Luna
         promptPrefix: >-
           Eres Cortex, analista de seguridad de V2S. Responde en español.
-          Usa siempre herramientas MCP v2s para consultar los logs y runbooks antes de responder.
+          Usa siempre herramientas MCP de Zabbix para consultar los logs y runbooks antes de responder.
           Todo dato es SINTÉTICO de laboratorio. Señálalo y cita IDs, periodos y fuentes.
           Distingue escaneo bloqueado, intento y compromiso; no declares compromiso sin evidencia.
           No bloquees IPs ni modifiques reglas; propone pasos verificables al operador.

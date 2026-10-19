@@ -1,6 +1,6 @@
 # Cortex · V2S
 
-Demo de Cortex construida desde el código de LibreChat (fork ESJavadex/cortex-v2s), con identidad propia y dos copilotos: operaciones Zabbix y seguridad pfSense. Nace de las reuniones de V2S del Centro de Mando: ampliar sus servicios de infraestructura con una capa conversacional sobre monitorización. No contiene infraestructura, contactos ni registros reales del cliente.
+Demo de Cortex construida desde el código de LibreChat (fork ESJavadex/cortex-v2s), con identidad propia, interfaz en español, firma «Hecho por Javadex» y dos copilotos: operaciones Zabbix y seguridad pfSense. Nace de las reuniones de V2S del Centro de Mando: ampliar sus servicios de infraestructura con una capa conversacional sobre monitorización. No contiene infraestructura, contactos ni registros reales del cliente.
 
 ## Arranque
 
@@ -37,8 +37,8 @@ Los eventos, nombres, direcciones de documentación y métricas son simulados. E
 
 - `Dockerfile`: dependencias, compilación de los paquetes y React, runtime Node 22 sin privilegios. No usa una imagen precompilada del chat.
 - `compose.yaml`: chat, MongoDB sin puerto publicado y mock MCP sin puerto publicado, con healthchecks y volúmenes independientes del Cortex anterior.
-- `librechat.yaml`: perfiles, instrucciones y herramientas MCP; GPT-4.1 mini vía OpenRouter para ambos perfiles; Gemini 2.5 Flash queda declarado como alternativa de configuración. Subida de archivos desactivada: este laboratorio consulta herramientas y no incluye servicio RAG.
-- `demo/`: dataset y servidor MCP de solo lectura; sustituible por un adaptador Zabbix real manteniendo las herramientas.
+- `librechat.yaml`: perfiles, instrucciones y herramientas MCP; GPT-6 Luna (`openai/gpt-6-luna`) vía OpenRouter para ambos perfiles. `reasoning_effort: none` habilita llamadas a herramientas en Chat Completions; se omiten temperatura y parámetros no soportados. Subida de archivos desactivada: este laboratorio consulta herramientas y no incluye servicio RAG.
+- `demo/`: dataset y servidor MCP «Zabbix V2S» de solo lectura; sustituible por un adaptador Zabbix real manteniendo las herramientas.
 - `../client/`: branding y componentes Cortex editados en código fuente (login, bienvenida, cabecera, paleta, favicon).
 - `tests/`: verificación en navegador y capturas; ver su README para pruebas con/sin generación.
 
@@ -47,3 +47,5 @@ El fork conserva la licencia y los nombres internos necesarios para compatibilid
 ## Siguiente integración real
 
 Reunir con Ismael: versión/API Zabbix, token de lectura acotado, grupo de hosts autorizado, ventana histórica, exportación de eventos y runbooks. Para pfSense: acceso a copia de logs con retención y campos acordados. Validar el proveedor/modelo y el tratamiento de datos antes de conectar información real. El mock no ejecuta cambios, bloqueos ni automatizaciones.
+
+El logotipo del conector Zabbix procede del [repositorio oficial de Zabbix](https://github.com/zabbix/zabbix). Compatibilidad de herramientas del modelo: [OpenAI Docs · GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna).

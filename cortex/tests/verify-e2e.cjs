@@ -22,7 +22,22 @@ const passwordEntry = envText.match(/^DEMO_PASSWORD=(.*)$/m)?.[1]?.trim();
 const password = process.env.DEMO_PASSWORD || passwordEntry?.replace(/^(['"])(.*)\1$/, '$2');
 const email = process.env.DEMO_EMAIL || 'demo@v2s.cortex.test';
 const smokeOnly = process.argv.includes('--smoke');
+const expectedModel = 'openai/gpt-6-luna';
 const prompt = 'Revisa las alertas críticas y correlaciona el problema de almacenamiento con las copias de seguridad. Cita IDs y recomienda próximos pasos.';
+
+function requestModelSettings(payload, prefix = '') {
+  if (!payload || typeof payload !== 'object') {
+    return {};
+  }
+  return Object.entries(payload).reduce((settings, [key, value]) => {
+    const field = prefix ? `${prefix}.${key}` : key;
+    if (['model', 'reasoning_effort', 'endpoint'].includes(key) && typeof value === 'string') {
+      settings[field] = value;
+      return settings;
+    }
+    return Object.assign(settings, requestModelSettings(value, field));
+  }, {});
+}
 
 function parseFinalEvent(stream) {
   const events = stream.split('\n').filter((line) => line.startsWith('data:')).map((line) => {
@@ -42,7 +57,7 @@ async function main() {
   fs.mkdirSync(artifacts, { recursive: true });
   const report = { baseURL, startedAt: new Date().toISOString(), checks: [], chatRequested: !smokeOnly };
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
-  const context = await browser.newContext({ viewport: { width: 1512, height: 1080 }, locale: 'es-ES' });
+  const context = await browser.newContext({ viewport: { width: 1512, height: 1080 }, locale: 'en-US' });
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
   const errors = [];
@@ -57,6 +72,11 @@ async function main() {
     report.checks.push('startup HTTP 200, Cortex title, registration closed');
 
     await page.goto(`${baseURL}/login`);
+    await page.getByRole('heading', { name: 'Menos ruido. Más claridad.', exact: true }).waitFor({ state: 'visible' });
+    const loginCredit = page.getByRole('link', { name: 'Hecho por Javadex', exact: true });
+    await loginCredit.waitFor({ state: 'visible' });
+    assert.equal(await loginCredit.getAttribute('href'), 'https://javadex.es');
+    report.checks.push('fresh en-US browser defaults to Spanish login and links to Javadex');
     await page.locator('input[name="email"]').fill(email);
     await page.locator('input[name="password"]').fill(password);
     await page.screenshot({ path: path.join(artifacts, 'login.png'), animations: 'disabled' });
@@ -67,6 +87,10 @@ async function main() {
     const login = await loginResponse.json();
     await page.waitForURL('**/c/**');
     await page.getByTestId('text-input').waitFor({ state: 'visible' });
+    await page.getByRole('heading', { name: 'Convierte señales en decisiones.', exact: true }).waitFor({ state: 'visible' });
+    const chatCredit = page.getByRole('link', { name: 'Hecho por Javadex', exact: true });
+    await chatCredit.waitFor({ state: 'visible' });
+    assert.equal(await chatCredit.getAttribute('href'), 'https://javadex.es');
     assert.doesNotMatch(await page.locator('body').innerText(), /LibreChat/i, 'Visible application must use Cortex branding');
     assert.match(await page.title(), /Cortex/i);
     report.checks.push('browser login, chat editor visible, title and visible branding');
@@ -78,19 +102,37 @@ async function main() {
     const specs = config.modelSpecs?.list || [];
     const operations = specs.find((spec) => /operaciones.*v2s/i.test(spec.label || spec.name));
     assert(operations, 'Cortex operations V2S model preset must be configured');
+    assert.equal(operations.preset.model, expectedModel, 'Operations preset must use GPT-6 Luna');
+    assert.equal(operations.preset.reasoning_effort, 'none', 'Luna tools require reasoning_effort none');
     report.preset = operations.label || operations.name;
     await page.getByRole('button').filter({ hasText: report.preset }).first().waitFor({ state: 'visible' });
-    report.checks.push('authenticated model catalogue and V2S operations preset');
+    await page.getByRole('button').filter({ hasText: 'Zabbix V2S' }).first().waitFor({ state: 'visible' });
+    const zabbixLogo = page.locator('[title="Zabbix V2S"] img[src="/assets/zabbix-logo.svg"]').first();
+    await zabbixLogo.waitFor({ state: 'visible' });
+    await page.waitForFunction(() => {
+      const logo = document.querySelector('[title="Zabbix V2S"] img[src="/assets/zabbix-logo.svg"]');
+      return logo?.complete && logo.naturalWidth > 0;
+    });
+    report.checks.push('Spanish welcome and Javadex footer; visible Zabbix V2S title and loaded logo');
+    report.checks.push('authenticated model catalogue, GPT-6 Luna preset and reasoning_effort none');
     await page.screenshot({ path: path.join(artifacts, 'workspace.png') });
     if (!smokeOnly) {
       await page.getByTestId('text-input').fill(prompt);
       const chatPromise = page.waitForResponse((response) => response.request().method() === 'GET' && /\/api\/agents\/chat\/stream\//.test(response.url()), { timeout: 180000 });
+      const requestPromise = page.waitForRequest((request) => request.method() === 'POST' && /\/api\/agents\/chat(?:\/[^/?]+)?(?:\?.*)?$/.test(request.url()), { timeout: 30000 });
       await page.getByTestId('send-button').click();
+      const chatRequest = await requestPromise;
+      report.requestSettings = requestModelSettings(chatRequest.postDataJSON());
+      assert(Object.entries(report.requestSettings).some(([field, value]) => field.endsWith('model') && value === expectedModel), 'Browser request must select GPT-6 Luna');
+      const requestEfforts = Object.entries(report.requestSettings).filter(([field]) => field.endsWith('reasoning_effort'));
+      assert(requestEfforts.every(([, value]) => value === 'none'), 'Browser request reasoning must be none when provided');
       const chatResponse = await chatPromise;
       assert.equal(chatResponse.status(), 200, 'Chat request must return HTTP 200');
       const stream = (await chatResponse.body()).toString('utf8');
       fs.writeFileSync(path.join(artifacts, 'chat-stream.txt'), stream);
       const final = parseFinalEvent(stream);
+      report.responseModel = final.responseMessage?.model;
+      assert.equal(report.responseModel, expectedModel, 'Final generated response must use GPT-6 Luna');
       assert.equal(final.responseMessage?.error ?? false, false, 'Chat must finish without an error');
       await page.locator('.agent-turn').last().waitFor({ state: 'visible', timeout: 180000 });
       const content = final.responseMessage?.content || [];

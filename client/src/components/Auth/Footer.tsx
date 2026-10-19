@@ -34,7 +34,15 @@ function Footer({ startupConfig }: { startupConfig: TStartupConfig | null | unde
   );
 
   return (
-    <div className="align-end m-4 flex justify-center gap-2" role="contentinfo">
+    <div className="align-end m-4 flex flex-wrap justify-center gap-2" role="contentinfo">
+      <a
+        href="https://javadex.es"
+        className="w-full text-center text-xs text-text-secondary hover:text-text-primary hover:underline"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {localize('com_ui_cortex_made_by')}
+      </a>
       {privacyPolicyRender}
       {privacyPolicyRender && termsOfServiceRender && (
         <div className="border-r-[1px] border-gray-300 dark:border-gray-600" />

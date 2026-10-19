@@ -1,11 +1,6 @@
-import Cookies from 'js-cookie';
+import { getInitialLanguage } from '~/locales/language';
 import { atomWithLocalStorage } from './utils';
 
-const defaultLang = () => {
-  const userLang = navigator.language || navigator.languages[0];
-  return Cookies.get('lang') || localStorage.getItem('lang') || userLang;
-};
-
-const lang = atomWithLocalStorage('lang', defaultLang());
+const lang = atomWithLocalStorage('lang', getInitialLanguage());
 
 export default { lang };

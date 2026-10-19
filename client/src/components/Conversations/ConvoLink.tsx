@@ -20,13 +20,15 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
   localize,
   children,
 }) => {
+  const displayTitle =
+    title === 'New Chat' ? localize('com_ui_new_chat') : title || localize('com_ui_untitled');
   return (
     <div
       className={cn(
         'flex grow items-center gap-2 overflow-hidden rounded-lg px-2',
         isActiveConvo || isPopoverActive ? 'bg-surface-active-alt' : '',
       )}
-      title={title ?? undefined}
+      title={displayTitle}
       aria-current={isActiveConvo ? 'page' : undefined}
       style={{ width: '100%' }}
     >
@@ -42,9 +44,9 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
           e.stopPropagation();
           onRename();
         }}
-        aria-label={title || localize('com_ui_untitled')}
+        aria-label={displayTitle}
       >
-        {title || localize('com_ui_untitled')}
+        {displayTitle}
       </div>
       <div
         className={cn(
