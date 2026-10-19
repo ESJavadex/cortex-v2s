@@ -181,3 +181,4 @@ CLAUDE.md
 /cortex/tests/artifacts/
 /cortex/tests/node_modules/
 /cortex/demo/legacy-scaffold/node_modules/
+!/cortex/librechat.yaml
