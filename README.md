@@ -1,3 +1,9 @@
+# Cortex · V2S
+
+Cortex Operations demo for V2S, built from the LibreChat source. [Setup, demo walkthrough and architecture](cortex/README.md).
+
+---
+
 <p align="center">
   <a href="https://librechat.ai">
     <img src="client/public/assets/logo.svg" height="256">

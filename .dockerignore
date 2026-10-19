@@ -15,3 +15,7 @@ docs
 
 # Ignore all hidden files
 .*
+cortex/.env
+cortex/tests
+cortex/demo
+cortex/README.md

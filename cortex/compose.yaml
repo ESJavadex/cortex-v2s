@@ -1,0 +1,50 @@
+name: cortex-v2s
+services:
+  chat:
+    image: cortex-v2s:local
+    build:
+      context: ..
+      dockerfile: cortex/Dockerfile
+    env_file: .env
+    ports:
+      - "127.0.0.1:3082:3080"
+      - "100.119.129.71:3082:3080"
+    volumes:
+      - ./librechat.yaml:/app/librechat.yaml:ro
+      - uploads:/app/uploads
+      - logs:/app/logs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      v2s-mock:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      start_period: 90s
+      retries: 5
+  mongodb:
+    image: mongo:8.0.17
+    command: ["mongod", "--bind_ip_all", "--quiet"]
+    volumes:
+      - mongo:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  v2s-mock:
+    build: ./demo
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+volumes:
+  mongo:
+  uploads:
+  logs:

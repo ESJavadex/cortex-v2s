@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useMediaQuery } from '@librechat/client';
 import { getConfigDefaults, PermissionTypes, Permissions } from 'librechat-data-provider';
+import CortexBrand from '~/components/Brand/CortexBrand';
 import ModelSelector from './Menus/Endpoints/ModelSelector';
 import { useGetStartupConfig } from '~/data-provider';
 import ExportAndShareMenu from './ExportAndShareMenu';
@@ -46,6 +47,9 @@ function Header() {
       <div className="hide-scrollbar flex w-full items-center justify-between gap-2 overflow-x-auto">
         <div className="mx-1 flex items-center">
           <OpenSidebar className="md:hidden" />
+          <div className="cortex-header-brand">
+            <CortexBrand />
+          </div>
           {!(navVisible && isSmallScreen) && (
             <div
               className={cn(

@@ -175,3 +175,9 @@ claude-flow
 # Removed Windows wrapper files per user request
 hive-mind-prompt-*.txt
 CLAUDE.md
+
+# Cortex local runtime
+/cortex/.env
+/cortex/tests/artifacts/
+/cortex/tests/node_modules/
+/cortex/demo/legacy-scaffold/node_modules/

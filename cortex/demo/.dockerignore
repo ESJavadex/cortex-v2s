@@ -1,0 +1,7 @@
+.venv
+__pycache__
+node_modules
+legacy-scaffold
+test_demo.py
+README.md
+.venv312
