@@ -1,27 +1,77 @@
 import React, { useCallback, useMemo, memo } from 'react';
-import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
-import type { TMessageProps, TMessageIcon } from '~/common';
-import { cn, getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
+import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
+import {
+  cn,
+  isSameTailRelation,
+  getMessageAriaLabel,
+  areMessageFieldsEqual,
+  getHeaderPrefixForScreenReader,
+} from '~/utils';
+import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
+import { parseWakeupText } from '~/components/Chat/Messages/Content/Parts/wakeup';
+import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
+import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
-import PlaceholderRow from '~/components/Chat/Messages/ui/PlaceholderRow';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
+import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
+import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import SubRow from '~/components/Chat/Messages/SubRow';
-import { fontSizeAtom } from '~/store/fontSize';
 import { MessageContext } from '~/Providers';
 import store from '~/store';
 
 type MessageRenderProps = {
   message?: TMessage;
+  /**
+   * Effective isSubmitting: false for non-latest messages, real value for latest.
+   * Computed by the wrapper (Message.tsx) so this memo'd component only re-renders
+   * when the value actually matters.
+   */
   isSubmitting?: boolean;
+  /** Stable context object from wrapper — avoids ChatContext subscription inside memo */
+  chatContext: TMessageChatContext;
+  /** The thread's tail; the comparator re-renders only when this row's relation to it changes */
+  latestMessageId?: string;
+  latestMessageDepth?: number;
 } & Pick<
   TMessageProps,
   'currentEditId' | 'setCurrentEditId' | 'siblingIdx' | 'setSiblingIdx' | 'siblingCount'
 >;
+
+/**
+ * Custom comparator for React.memo: compares `message` by key fields instead of reference
+ * because `buildTree` creates new message objects on every streaming update for ALL messages,
+ * even when only the latest message's text changed.
+ */
+function areMessageRenderPropsEqual(prev: MessageRenderProps, next: MessageRenderProps): boolean {
+  if (prev.isSubmitting !== next.isSubmitting) {
+    return false;
+  }
+  if (prev.chatContext !== next.chatContext) {
+    return false;
+  }
+  if (prev.siblingIdx !== next.siblingIdx) {
+    return false;
+  }
+  if (prev.siblingCount !== next.siblingCount) {
+    return false;
+  }
+  if (prev.currentEditId !== next.currentEditId) {
+    return false;
+  }
+  if (prev.setSiblingIdx !== next.setSiblingIdx) {
+    return false;
+  }
+  if (prev.setCurrentEditId !== next.setCurrentEditId) {
+    return false;
+  }
+
+  return areMessageFieldsEqual(prev.message, next.message) && isSameTailRelation(prev, next);
+}
 
 const MessageRender = memo(function MessageRender({
   message: msg,
@@ -31,6 +81,9 @@ const MessageRender = memo(function MessageRender({
   currentEditId,
   setCurrentEditId,
   isSubmitting = false,
+  chatContext,
+  latestMessageId,
+  latestMessageDepth,
 }: MessageRenderProps) {
   const localize = useLocalize();
   const {
@@ -44,27 +97,26 @@ const MessageRender = memo(function MessageRender({
     messageLabel,
     handleFeedback,
     handleContinue,
-    latestMessageId,
     copyToClipboard,
+    getCanCopy,
     regenerateMessage,
-    latestMessageDepth,
+    hasConfiguredSender,
   } = useMessageActions({
     message: msg,
     currentEditId,
     setCurrentEditId,
+    chatContext,
   });
-  const fontSize = useAtomValue(fontSizeAtom);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
+  const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
   const hasNoChildren = !(msg?.children?.length ?? 0);
   const isLast = useMemo(
     () => hasNoChildren && (msg?.depth === latestMessageDepth || msg?.depth === -1),
     [hasNoChildren, msg?.depth, latestMessageDepth],
   );
   const isLatestMessage = msg?.messageId === latestMessageId;
-  /** Only pass isSubmitting to the latest message to prevent unnecessary re-renders */
-  const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
 
   const iconData: TMessageIcon = useMemo(
     () => ({
@@ -86,123 +138,115 @@ const MessageRender = memo(function MessageRender({
   );
 
   const { hasParallelContent } = useContentMetadata(msg);
+  const wakeupDisplay = useMemo(
+    () => (msg?.isCreatedByUser === true ? parseWakeupText(msg.text) : null),
+    [msg?.isCreatedByUser, msg?.text],
+  );
   const messageId = msg?.messageId ?? '';
   const messageContextValue = useMemo(
     () => ({
       messageId,
       isLatestMessage,
       isExpanded: false as const,
-      isSubmitting: effectiveIsSubmitting,
+      isSubmitting,
       conversationId: conversation?.conversationId,
     }),
-    [messageId, conversation?.conversationId, effectiveIsSubmitting, isLatestMessage],
+    [messageId, conversation?.conversationId, isSubmitting, isLatestMessage],
   );
 
   if (!msg) {
     return null;
   }
 
-  const getChatWidthClass = () => {
-    if (maximizeChatSpace) {
-      return 'w-full max-w-full md:px-5 lg:px-1 xl:px-5';
-    }
-    if (hasParallelContent) {
-      return 'md:max-w-[58rem] xl:max-w-[70rem]';
-    }
-    return 'md:max-w-[47rem] xl:max-w-[55rem]';
-  };
-
-  const baseClasses = {
-    common: 'group mx-auto flex flex-1 gap-3 transition-all duration-300 transform-gpu ',
-    chat: getChatWidthClass(),
-  };
-
-  const conditionalClasses = {
-    focus: 'focus:outline-none focus:ring-2 focus:ring-border-xheavy',
-  };
-
   return (
-    <div
+    <MessageRow
       id={msg.messageId}
-      aria-label={getMessageAriaLabel(msg, localize)}
-      className={cn(
-        baseClasses.common,
-        baseClasses.chat,
-        conditionalClasses.focus,
-        'message-render',
+      icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
+      label={messageLabel ?? ''}
+      hoverLabel={getHeaderHoverLabel(
+        hasConfiguredSender,
+        agent?.model,
+        assistant?.model,
+        msg.model,
+        conversation?.model,
       )}
+      timestamp={msg.createdAt ?? msg.clientTimestamp}
+      ariaLabel={getMessageAriaLabel(msg, localize)}
+      headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
+      isCreatedByUser={msg.isCreatedByUser === true}
+      hasParallelContent={hasParallelContent}
+      fullWidth={maximizeChatSpace}
+      isEditing={edit}
+      systemLabel={wakeupDisplay != null && !edit ? localize('com_ui_system_event') : undefined}
+      footer={
+        <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
+          {/* The reading holds the column start: it takes over the slot the streaming
+              dot vacates, so the retry navigation beside it — whose width the footer
+              reserves whether or not hover has revealed it — must never push the
+              timer inboard of that column. */}
+          {shouldShowElapsed({
+            isSubmitting,
+            isLatestMessage,
+            isCreatedByUser: msg.isCreatedByUser,
+            siblingIdx,
+            siblingCount,
+          }) && <Elapsed index={index} />}
+          {/* A user turn is right-aligned, so its retry navigation belongs at the
+              outer edge under the bubble rather than inboard of the actions.
+
+              While the answer is generating every other action is withheld, which
+              would otherwise leave this counter sitting alone under a half-written
+              response. It reveals on hover there, like the actions it sits with. */}
+          <SiblingSwitch
+            siblingIdx={siblingIdx}
+            siblingCount={siblingCount}
+            setSiblingIdx={setSiblingIdx}
+            className={cn(
+              msg.isCreatedByUser === true && 'order-last',
+              isSubmitting && isLatestMessage && revealOnRowHoverClasses,
+            )}
+          />
+          <HoverButtons
+            index={index}
+            isEditing={edit}
+            message={msg}
+            enterEdit={enterEdit}
+            conversation={conversation ?? null}
+            regenerate={handleRegenerateMessage}
+            copyToClipboard={copyToClipboard}
+            getCanCopy={getCanCopy}
+            handleContinue={handleContinue}
+            latestMessageId={latestMessageId}
+            getLatestMessageId={getLatestMessageId}
+            handleFeedback={handleFeedback}
+            isLast={isLast}
+          />
+        </SubRow>
+      }
     >
-      {!hasParallelContent && (
-        <div className="relative flex flex-shrink-0 flex-col items-center">
-          <div className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full">
-            <MessageIcon iconData={iconData} assistant={assistant} agent={agent} />
-          </div>
-        </div>
-      )}
-
-      <div
-        className={cn(
-          'relative flex flex-col',
-          hasParallelContent ? 'w-full' : 'w-11/12',
-          msg.isCreatedByUser ? 'user-turn' : 'agent-turn',
+      <MessageContext.Provider value={messageContextValue}>
+        {wakeupDisplay != null && !edit ? (
+          <Wakeup display={wakeupDisplay} conversationId={conversation?.conversationId} />
+        ) : (
+          <MessageContent
+            ask={ask}
+            edit={edit}
+            isLast={isLast}
+            text={msg.text || ''}
+            message={msg}
+            enterEdit={enterEdit}
+            error={!!(msg.error ?? false)}
+            isSubmitting={isSubmitting}
+            unfinished={msg.unfinished ?? false}
+            isCreatedByUser={msg.isCreatedByUser ?? true}
+            siblingIdx={siblingIdx ?? 0}
+            setSiblingIdx={setSiblingIdx ?? (() => ({}))}
+          />
         )}
-      >
-        {!hasParallelContent && (
-          <h2 className={cn('select-none font-semibold', fontSize)}>
-            <span className="sr-only">{getHeaderPrefixForScreenReader(msg, localize)}</span>
-            {messageLabel}
-          </h2>
-        )}
-
-        <div className="flex flex-col gap-1">
-          <div className="flex min-h-[20px] max-w-full flex-grow flex-col gap-0">
-            <MessageContext.Provider value={messageContextValue}>
-              <MessageContent
-                ask={ask}
-                edit={edit}
-                isLast={isLast}
-                text={msg.text || ''}
-                message={msg}
-                enterEdit={enterEdit}
-                error={!!(msg.error ?? false)}
-                isSubmitting={effectiveIsSubmitting}
-                unfinished={msg.unfinished ?? false}
-                isCreatedByUser={msg.isCreatedByUser ?? true}
-                siblingIdx={siblingIdx ?? 0}
-                setSiblingIdx={setSiblingIdx ?? (() => ({}))}
-              />
-            </MessageContext.Provider>
-          </div>
-          {hasNoChildren && effectiveIsSubmitting ? (
-            <PlaceholderRow />
-          ) : (
-            <SubRow classes="text-xs">
-              <SiblingSwitch
-                siblingIdx={siblingIdx}
-                siblingCount={siblingCount}
-                setSiblingIdx={setSiblingIdx}
-              />
-              <HoverButtons
-                index={index}
-                isEditing={edit}
-                message={msg}
-                enterEdit={enterEdit}
-                isSubmitting={isSubmitting}
-                conversation={conversation ?? null}
-                regenerate={handleRegenerateMessage}
-                copyToClipboard={copyToClipboard}
-                handleContinue={handleContinue}
-                latestMessageId={latestMessageId}
-                handleFeedback={handleFeedback}
-                isLast={isLast}
-              />
-            </SubRow>
-          )}
-        </div>
-      </div>
-    </div>
+      </MessageContext.Provider>
+    </MessageRow>
   );
-});
+}, areMessageRenderPropsEqual);
 MessageRender.displayName = 'MessageRender';
 
 export default MessageRender;

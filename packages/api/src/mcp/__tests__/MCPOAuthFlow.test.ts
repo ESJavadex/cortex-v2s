@@ -5,13 +5,14 @@
  * using a real test OAuth server (not mocked SDK functions).
  */
 
-import { createHash } from 'crypto';
 import { Keyv } from 'keyv';
-import { MCPTokenStorage, MCPOAuthHandler } from '~/mcp/oauth';
-import { FlowStateManager } from '~/flow/manager';
-import { createOAuthMCPServer, MockKeyv, InMemoryTokenStore } from './helpers/oauthTestServer';
+import { createHash } from 'crypto';
+import { TokenExchangeMethodEnum } from 'librechat-data-provider';
 import type { OAuthTestServer } from './helpers/oauthTestServer';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
+import { createOAuthMCPServer, MockKeyv, InMemoryTokenStore } from './helpers/oauthTestServer';
+import { MCPTokenStorage, MCPOAuthHandler } from '~/mcp/oauth';
+import { FlowStateManager } from '~/flow/manager';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -20,6 +21,8 @@ jest.mock('@librechat/data-schemas', () => ({
     error: jest.fn(),
     debug: jest.fn(),
   },
+  getTenantId: jest.fn(),
+  SYSTEM_TENANT_ID: '__SYSTEM__',
   encryptV2: jest.fn(async (val: string) => `enc:${val}`),
   decryptV2: jest.fn(async (val: string) => val.replace(/^enc:/, '')),
 }));
@@ -27,6 +30,7 @@ jest.mock('@librechat/data-schemas', () => ({
 /** Bypass SSRF validation — these tests use real local HTTP servers. */
 jest.mock('~/auth', () => ({
   ...jest.requireActual('~/auth'),
+  createSSRFSafeUndiciConnect: jest.fn(() => undefined),
   isSSRFTarget: jest.fn(() => false),
   resolveHostnameSSRF: jest.fn(async () => false),
 }));
@@ -85,14 +89,17 @@ describe('MCP OAuth Flow — Real HTTP Server', () => {
           clientInfo: {
             ...clientInfo,
             redirect_uris: ['http://localhost/callback'],
+            token_endpoint_auth_method: 'client_secret_post',
           },
+          storedTokenEndpoint: `${server.url}token`,
+          storedAuthMethods: ['client_secret_post'],
         },
         {},
         {
           token_url: `${server.url}token`,
           client_id: clientInfo.client_id,
           client_secret: clientInfo.client_secret,
-          token_exchange_method: 'DefaultPost',
+          token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
         },
       );
 
@@ -131,7 +138,7 @@ describe('MCP OAuth Flow — Real HTTP Server', () => {
           {
             token_url: `${rotatingServer.url}token`,
             client_id: 'anon',
-            token_exchange_method: 'DefaultPost',
+            token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
           },
         );
 
@@ -155,7 +162,7 @@ describe('MCP OAuth Flow — Real HTTP Server', () => {
           {
             token_url: `${server.url}token`,
             client_id: 'anon',
-            token_exchange_method: 'DefaultPost',
+            token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
           },
         ),
       ).rejects.toThrow();
@@ -268,6 +275,13 @@ describe('MCP OAuth Flow — Real HTTP Server', () => {
           serverName: 'test-srv',
           tokens: initial,
           createToken: tokenStore.createToken,
+          clientInfo: { client_id: 'test-client' },
+          metadata: {
+            authorization_endpoint: `${server.url}authorize`,
+            token_endpoint: `${server.url}token`,
+            server_url: server.url,
+            client_source: 'dynamic',
+          },
         });
 
         // 3. Retrieve — should succeed
@@ -412,7 +426,7 @@ describe('MCP OAuth Flow — Real HTTP Server', () => {
 
       const state = await flowManager.getFlowState(flowId, 'mcp_oauth');
       expect(state?.status).toBe('COMPLETED');
-      expect(state?.result?.access_token).toBe(tokens.access_token);
+      expect((state?.result as MCPOAuthTokens | undefined)?.access_token).toBe(tokens.access_token);
     });
 
     it('should fail flow when authorization code is invalid', async () => {

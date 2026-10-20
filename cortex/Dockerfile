@@ -1,5 +1,6 @@
-FROM node:22.22.2-bookworm-slim AS dependencies
+FROM node:24.16.0-bookworm-slim AS dependencies
 WORKDIR /app
+ENV SCARF_ANALYTICS=false HUSKY=0
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ git ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 COPY api/package.json api/package.json
@@ -13,12 +14,12 @@ FROM dependencies AS build
 COPY . .
 ENV NODE_OPTIONS=--max-old-space-size=6144
 RUN npm run frontend
-FROM node:22.22.2-bookworm-slim AS runtime
+FROM node:24.16.0-bookworm-slim AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3080
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build --chown=node:node /app /app
-RUN mkdir -p logs uploads client/public/images && chown -R node:node logs uploads client/public
+RUN mkdir -p logs uploads client/public/images skill data && chown -R node:node logs uploads client/public skill data
 USER node
 EXPOSE 3080
 CMD ["npm", "run", "backend"]

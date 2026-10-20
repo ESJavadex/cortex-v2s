@@ -1,9 +1,9 @@
 import mongoose, { Types } from 'mongoose';
-import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { PrincipalType, SystemRoles } from 'librechat-data-provider';
+import type { SystemCapability } from '~/types/admin';
 import type * as t from '~/types';
-import type { SystemCapability } from '~/systemCapabilities';
-import { SystemCapabilities, CapabilityImplications } from '~/systemCapabilities';
+import { SystemCapabilities, CapabilityImplications } from '~/admin/capabilities';
 import { createSystemGrantMethods } from './systemGrant';
 import systemGrantSchema from '~/schema/systemGrant';
 import logger from '~/config/winston';
@@ -25,6 +25,9 @@ beforeAll(async () => {
     mongoose.models.SystemGrant || mongoose.model<t.ISystemGrant>('SystemGrant', systemGrantSchema);
   methods = createSystemGrantMethods(mongoose);
   await mongoose.connect(mongoServer.getUri());
+  // Connecting does not wait for the unique index. Complete initialization
+  // before any seeding or duplicate writes can race the background build.
+  await SystemGrant.init();
 });
 
 afterAll(async () => {
@@ -113,13 +116,14 @@ describe('systemGrant methods', () => {
   describe('grantCapability', () => {
     it('creates a grant and returns the document', async () => {
       const userId = new Types.ObjectId();
-      const doc = await methods.grantCapability({
+      const { grant: doc, created } = await methods.grantCapability({
         principalType: PrincipalType.USER,
         principalId: userId,
         capability: SystemCapabilities.READ_USERS,
       });
 
       expect(doc).toBeTruthy();
+      expect(created).toBe(true);
       expect(doc!.principalType).toBe(PrincipalType.USER);
       expect(doc!.capability).toBe(SystemCapabilities.READ_USERS);
       expect(doc!.grantedAt).toBeInstanceOf(Date);
@@ -255,7 +259,7 @@ describe('systemGrant methods', () => {
         capability: SystemCapabilities.READ_USERS as SystemCapability,
       };
 
-      const original = await methods.grantCapability(params);
+      const { grant: original } = await methods.grantCapability(params);
 
       // Simulate a race: findOneAndUpdate upserts but hits a duplicate key
       const model = mongoose.models.SystemGrant;
@@ -265,8 +269,10 @@ describe('systemGrant methods', () => {
           Object.assign(new Error('E11000 duplicate key error'), { code: 11000 }),
         );
 
-      const result = await methods.grantCapability(params);
+      const { grant: result, created } = await methods.grantCapability(params);
       expect(result).toBeTruthy();
+      // a lost upsert race is not a new creation, so it must not be audited
+      expect(created).toBe(false);
       expect(result!.capability).toBe(SystemCapabilities.READ_USERS);
       expect(result!.principalId.toString()).toBe(original!.principalId.toString());
     });
@@ -305,7 +311,7 @@ describe('systemGrant methods', () => {
     });
 
     it('accepts any string for ROLE principal without ObjectId validation', async () => {
-      const doc = await methods.grantCapability({
+      const { grant: doc } = await methods.grantCapability({
         principalType: PrincipalType.ROLE,
         principalId: 'ANY_STRING_HERE',
         capability: SystemCapabilities.READ_CONFIGS,
@@ -542,6 +548,74 @@ describe('systemGrant methods', () => {
       });
     });
 
+    describe('hierarchical config capabilities', () => {
+      it('manage:configs satisfies manage:configs:<section>', async () => {
+        const userId = new Types.ObjectId();
+        await methods.grantCapability({
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          capability: SystemCapabilities.MANAGE_CONFIGS,
+        });
+
+        const result = await methods.hasCapabilityForPrincipals({
+          principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+          capability: 'manage:configs:endpoints' as SystemCapability,
+        });
+        expect(result).toBe(true);
+      });
+
+      it('manage:configs satisfies read:configs:<section> transitively', async () => {
+        const userId = new Types.ObjectId();
+        await methods.grantCapability({
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          capability: SystemCapabilities.MANAGE_CONFIGS,
+        });
+
+        const result = await methods.hasCapabilityForPrincipals({
+          principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+          capability: 'read:configs:endpoints' as SystemCapability,
+        });
+        expect(result).toBe(true);
+      });
+
+      it('read:configs satisfies read:configs:<section> but NOT manage:configs:<section>', async () => {
+        const userId = new Types.ObjectId();
+        await methods.grantCapability({
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          capability: SystemCapabilities.READ_CONFIGS,
+        });
+
+        const readResult = await methods.hasCapabilityForPrincipals({
+          principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+          capability: 'read:configs:endpoints' as SystemCapability,
+        });
+        expect(readResult).toBe(true);
+
+        const manageResult = await methods.hasCapabilityForPrincipals({
+          principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+          capability: 'manage:configs:endpoints' as SystemCapability,
+        });
+        expect(manageResult).toBe(false);
+      });
+
+      it('assign:configs satisfies assign:configs:<target>', async () => {
+        const userId = new Types.ObjectId();
+        await methods.grantCapability({
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          capability: SystemCapabilities.ASSIGN_CONFIGS,
+        });
+
+        const result = await methods.hasCapabilityForPrincipals({
+          principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+          capability: 'assign:configs:user' as SystemCapability,
+        });
+        expect(result).toBe(true);
+      });
+    });
+
     describe('tenant scoping', () => {
       it('tenant-scoped grant does not match platform-level query', async () => {
         const userId = new Types.ObjectId();
@@ -702,7 +776,138 @@ describe('systemGrant methods', () => {
     });
   });
 
+  describe('deleteGrantsForPrincipal', () => {
+    it('deletes all grants for a principal', async () => {
+      const groupId = new Types.ObjectId();
+
+      await methods.grantCapability({
+        principalType: PrincipalType.GROUP,
+        principalId: groupId,
+        capability: SystemCapabilities.READ_USERS,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.GROUP,
+        principalId: groupId,
+        capability: SystemCapabilities.READ_CONFIGS,
+      });
+
+      await methods.deleteGrantsForPrincipal(PrincipalType.GROUP, groupId);
+
+      const remaining = await SystemGrant.countDocuments({
+        principalType: PrincipalType.GROUP,
+        principalId: groupId,
+      });
+      expect(remaining).toBe(0);
+    });
+
+    it('is a no-op for principal with no grants', async () => {
+      const groupId = new Types.ObjectId();
+
+      await expect(
+        methods.deleteGrantsForPrincipal(PrincipalType.GROUP, groupId),
+      ).resolves.not.toThrow();
+    });
+
+    it('does not affect other principals', async () => {
+      const groupA = new Types.ObjectId();
+      const groupB = new Types.ObjectId();
+
+      await methods.grantCapability({
+        principalType: PrincipalType.GROUP,
+        principalId: groupA,
+        capability: SystemCapabilities.READ_USERS,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.GROUP,
+        principalId: groupB,
+        capability: SystemCapabilities.READ_USERS,
+      });
+
+      await methods.deleteGrantsForPrincipal(PrincipalType.GROUP, groupA);
+
+      const remainingA = await SystemGrant.countDocuments({
+        principalType: PrincipalType.GROUP,
+        principalId: groupA,
+      });
+      const remainingB = await SystemGrant.countDocuments({
+        principalType: PrincipalType.GROUP,
+        principalId: groupB,
+      });
+      expect(remainingA).toBe(0);
+      expect(remainingB).toBe(1);
+    });
+
+    it('with tenantId deletes only tenant-scoped grants, not platform-level grants', async () => {
+      // Platform-level grant (no tenantId)
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+        capability: SystemCapabilities.READ_USERS,
+      });
+      // Tenant-scoped grant
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+        capability: SystemCapabilities.READ_CONFIGS,
+        tenantId: 'tenant-1',
+      });
+      // Different tenant grant
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+        capability: SystemCapabilities.READ_GROUPS,
+        tenantId: 'tenant-2',
+      });
+
+      await methods.deleteGrantsForPrincipal(PrincipalType.ROLE, 'editor', {
+        tenantId: 'tenant-1',
+      });
+
+      const remaining = await SystemGrant.find({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+      }).lean();
+      const caps = remaining.map((g) => g.capability).sort();
+      // Platform-level and tenant-2 grants survive
+      expect(caps).toEqual([SystemCapabilities.READ_GROUPS, SystemCapabilities.READ_USERS]);
+    });
+
+    it('without tenantId deletes all grants across all tenants', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'temp-role',
+        capability: SystemCapabilities.READ_USERS,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'temp-role',
+        capability: SystemCapabilities.READ_CONFIGS,
+        tenantId: 'tenant-a',
+      });
+
+      await methods.deleteGrantsForPrincipal(PrincipalType.ROLE, 'temp-role');
+
+      const remaining = await SystemGrant.countDocuments({
+        principalType: PrincipalType.ROLE,
+        principalId: 'temp-role',
+      });
+      expect(remaining).toBe(0);
+    });
+  });
+
   describe('schema validation', () => {
+    it('starts with the non-sparse unique grant index ready', async () => {
+      const indexes = await SystemGrant.collection.indexes();
+      const unique = indexes.find((index) => index.unique === true);
+      expect(unique?.key).toEqual({
+        principalType: 1,
+        principalId: 1,
+        capability: 1,
+        tenantId: 1,
+      });
+      expect(unique?.sparse).not.toBe(true);
+    });
+
     it('rejects null tenantId at the schema level', async () => {
       await expect(
         SystemGrant.create({
@@ -848,6 +1053,549 @@ describe('systemGrant methods', () => {
 
       const count = await SystemGrant.countDocuments({ principalId });
       expect(count).toBe(2);
+    });
+  });
+
+  describe('listGrants', () => {
+    beforeEach(async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.ACCESS_ADMIN,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+        capability: SystemCapabilities.READ_USERS,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.GROUP,
+        principalId: new Types.ObjectId(),
+        capability: SystemCapabilities.READ_CONFIGS,
+      });
+    });
+
+    it('returns all platform-level grants when called without options', async () => {
+      const grants = await methods.listGrants();
+      expect(grants).toHaveLength(3);
+    });
+
+    it('respects limit parameter', async () => {
+      const grants = await methods.listGrants({ limit: 2 });
+      expect(grants).toHaveLength(2);
+    });
+
+    it('respects offset parameter', async () => {
+      const all = await methods.listGrants();
+      const page2 = await methods.listGrants({ offset: 2, limit: 10 });
+      expect(page2).toHaveLength(1);
+      expect(page2[0].capability).toBe(all[2].capability);
+    });
+
+    it('filters by principalTypes', async () => {
+      const grants = await methods.listGrants({
+        principalTypes: [PrincipalType.ROLE],
+      });
+      expect(grants).toHaveLength(2);
+      for (const g of grants) {
+        expect(g.principalType).toBe(PrincipalType.ROLE);
+      }
+    });
+
+    it('returns empty array for principalTypes with no grants', async () => {
+      const grants = await methods.listGrants({
+        principalTypes: [PrincipalType.USER],
+      });
+      expect(grants).toHaveLength(0);
+    });
+
+    it('excludes tenant-scoped grants when no tenantId provided', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.MANAGE_USERS,
+        tenantId: 'tenant-1',
+      });
+
+      const grants = await methods.listGrants();
+      expect(grants.every((g) => !('tenantId' in g && g.tenantId))).toBe(true);
+    });
+
+    it('includes tenant and platform grants when tenantId provided', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.MANAGE_USERS,
+        tenantId: 'tenant-1',
+      });
+
+      const grants = await methods.listGrants({ tenantId: 'tenant-1' });
+      expect(grants).toHaveLength(4);
+    });
+
+    it('sorts by principalType then capability', async () => {
+      const grants = await methods.listGrants();
+      for (let i = 1; i < grants.length; i++) {
+        const prev = `${grants[i - 1].principalType}:${grants[i - 1].capability}`;
+        const curr = `${grants[i].principalType}:${grants[i].capability}`;
+        expect(prev <= curr).toBe(true);
+      }
+    });
+  });
+
+  describe('countGrants', () => {
+    it('returns total count matching the filter', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.ACCESS_ADMIN,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+        capability: SystemCapabilities.READ_USERS,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.GROUP,
+        principalId: new Types.ObjectId(),
+        capability: SystemCapabilities.READ_CONFIGS,
+      });
+
+      const total = await methods.countGrants();
+      expect(total).toBe(3);
+    });
+
+    it('filters by principalTypes', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.ACCESS_ADMIN,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.GROUP,
+        principalId: new Types.ObjectId(),
+        capability: SystemCapabilities.READ_CONFIGS,
+      });
+
+      const count = await methods.countGrants({
+        principalTypes: [PrincipalType.ROLE],
+      });
+      expect(count).toBe(1);
+    });
+
+    it('returns 0 when no grants match', async () => {
+      const count = await methods.countGrants();
+      expect(count).toBe(0);
+    });
+  });
+
+  describe('getCapabilitiesForPrincipals', () => {
+    it('returns grants across multiple principals in a single query', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.READ_USERS,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+        capability: SystemCapabilities.READ_ROLES,
+      });
+
+      const grants = await methods.getCapabilitiesForPrincipals({
+        principals: [
+          { principalType: PrincipalType.USER, principalId: userId },
+          { principalType: PrincipalType.ROLE, principalId: 'editor' },
+        ],
+      });
+
+      expect(grants).toHaveLength(2);
+      const caps = grants.map((g) => g.capability).sort();
+      expect(caps).toEqual([SystemCapabilities.READ_ROLES, SystemCapabilities.READ_USERS]);
+    });
+
+    it('returns empty array for empty principals list', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.ACCESS_ADMIN,
+      });
+
+      const grants = await methods.getCapabilitiesForPrincipals({ principals: [] });
+      expect(grants).toEqual([]);
+    });
+
+    it('returns only matching principals, not all grants', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.READ_USERS,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'unrelated',
+        capability: SystemCapabilities.MANAGE_ROLES,
+      });
+
+      const grants = await methods.getCapabilitiesForPrincipals({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+
+      expect(grants).toHaveLength(1);
+      expect(grants[0].capability).toBe(SystemCapabilities.READ_USERS);
+    });
+
+    it('returns multiple grants for the same principal', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.ACCESS_ADMIN,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.MANAGE_ROLES,
+      });
+
+      const grants = await methods.getCapabilitiesForPrincipals({
+        principals: [{ principalType: PrincipalType.ROLE, principalId: 'admin' }],
+      });
+
+      expect(grants).toHaveLength(2);
+    });
+
+    it('excludes tenant-scoped grants when no tenantId provided', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.ACCESS_ADMIN,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.MANAGE_USERS,
+        tenantId: 'tenant-1',
+      });
+
+      const grants = await methods.getCapabilitiesForPrincipals({
+        principals: [{ principalType: PrincipalType.ROLE, principalId: 'admin' }],
+      });
+
+      expect(grants).toHaveLength(1);
+      expect(grants[0].capability).toBe(SystemCapabilities.ACCESS_ADMIN);
+    });
+
+    it('includes both platform and tenant grants when tenantId provided', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.ACCESS_ADMIN,
+      });
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.MANAGE_USERS,
+        tenantId: 'tenant-1',
+      });
+
+      const grants = await methods.getCapabilitiesForPrincipals({
+        principals: [{ principalType: PrincipalType.ROLE, principalId: 'admin' }],
+        tenantId: 'tenant-1',
+      });
+
+      expect(grants).toHaveLength(2);
+    });
+
+    it('filters out PUBLIC principals before querying', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.READ_USERS,
+      });
+
+      const grants = await methods.getCapabilitiesForPrincipals({
+        principals: [
+          { principalType: PrincipalType.PUBLIC, principalId: '' },
+          { principalType: PrincipalType.USER, principalId: userId },
+        ],
+      });
+
+      expect(grants).toHaveLength(1);
+      expect(grants[0].capability).toBe(SystemCapabilities.READ_USERS);
+    });
+
+    it('returns empty array when all principals are PUBLIC', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.ACCESS_ADMIN,
+      });
+
+      const grants = await methods.getCapabilitiesForPrincipals({
+        principals: [{ principalType: PrincipalType.PUBLIC, principalId: '' }],
+      });
+
+      expect(grants).toEqual([]);
+    });
+  });
+
+  describe('getHeldCapabilities', () => {
+    const userId = new Types.ObjectId();
+
+    it('returns the subset of capabilities the principals hold', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.READ_ROLES,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+        capabilities: [SystemCapabilities.READ_ROLES, SystemCapabilities.READ_GROUPS],
+      });
+
+      expect(held).toEqual(new Set([SystemCapabilities.READ_ROLES]));
+    });
+
+    it('returns empty set when no capabilities match', async () => {
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: new Types.ObjectId() }],
+        capabilities: [SystemCapabilities.MANAGE_ROLES],
+      });
+
+      expect(held.size).toBe(0);
+    });
+
+    it('returns empty set for empty principals', async () => {
+      const held = await methods.getHeldCapabilities({
+        principals: [],
+        capabilities: [SystemCapabilities.READ_ROLES],
+      });
+
+      expect(held.size).toBe(0);
+    });
+
+    it('returns empty set for empty capabilities', async () => {
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+        capabilities: [],
+      });
+
+      expect(held.size).toBe(0);
+    });
+
+    it('resolves implied capabilities via reverse implication map', async () => {
+      const implUser = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: implUser,
+        capability: SystemCapabilities.MANAGE_ROLES,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: implUser }],
+        capabilities: [SystemCapabilities.READ_ROLES, SystemCapabilities.MANAGE_GROUPS],
+      });
+
+      expect(held).toEqual(new Set([SystemCapabilities.READ_ROLES]));
+    });
+
+    it('excludes principals with undefined principalId', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'admin',
+        capability: SystemCapabilities.READ_ROLES,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.ROLE }],
+        capabilities: [SystemCapabilities.READ_ROLES],
+      });
+
+      expect(held.size).toBe(0);
+    });
+
+    it('filters out PUBLIC principals', async () => {
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.PUBLIC, principalId: '' }],
+        capabilities: [SystemCapabilities.READ_ROLES],
+      });
+
+      expect(held.size).toBe(0);
+    });
+
+    it('respects tenant scoping', async () => {
+      const tenantUser = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: tenantUser,
+        capability: SystemCapabilities.READ_ROLES,
+        tenantId: 'tenant-a',
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: tenantUser }],
+        capabilities: [SystemCapabilities.READ_ROLES],
+        tenantId: 'tenant-a',
+      });
+      expect(held).toEqual(new Set([SystemCapabilities.READ_ROLES]));
+
+      const heldOther = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: tenantUser }],
+        capabilities: [SystemCapabilities.READ_ROLES],
+        tenantId: 'tenant-b',
+      });
+      expect(heldOther.size).toBe(0);
+
+      const heldNoTenant = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: tenantUser }],
+        capabilities: [SystemCapabilities.READ_ROLES],
+      });
+      expect(heldNoTenant.size).toBe(0);
+    });
+
+    it('resolves extended capability when principal holds the parent base capability', async () => {
+      const extUser = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: extUser,
+        capability: SystemCapabilities.MANAGE_CONFIGS,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: extUser }],
+        capabilities: ['manage:configs:endpoints' as SystemCapability],
+      });
+
+      expect(held).toEqual(new Set(['manage:configs:endpoints']));
+    });
+
+    it('does not resolve extended capability when principal holds a different verb parent', async () => {
+      const readOnlyUser = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: readOnlyUser,
+        capability: SystemCapabilities.READ_CONFIGS,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: readOnlyUser }],
+        capabilities: ['manage:configs:endpoints' as SystemCapability],
+      });
+
+      expect(held.size).toBe(0);
+    });
+
+    it('resolves a section-scoped read capability when the principal holds the same-section manage grant', async () => {
+      const sectionManager = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: sectionManager,
+        capability: 'manage:configs:endpoints' as SystemCapability,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: sectionManager }],
+        capabilities: ['read:configs:endpoints' as SystemCapability],
+      });
+
+      expect(held).toEqual(new Set(['read:configs:endpoints']));
+    });
+
+    it("does not resolve a read capability from a different section's manage grant", async () => {
+      const otherSectionManager = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: otherSectionManager,
+        capability: 'manage:configs:balance' as SystemCapability,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: otherSectionManager }],
+        capabilities: ['read:configs:endpoints' as SystemCapability],
+      });
+
+      expect(held.size).toBe(0);
+    });
+  });
+
+  describe('hasAnyConfigReadAccess', () => {
+    it('returns true for a broad read:configs holder', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.READ_CONFIGS,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(true);
+    });
+
+    it('returns true for a broad manage:configs holder, which implies read', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.MANAGE_CONFIGS,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(true);
+    });
+
+    it('returns true for a section-scoped read:configs:<section> holder', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: 'read:configs:endpoints' as SystemCapability,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(true);
+    });
+
+    it('returns true for a section-scoped manage:configs:<section> holder', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: 'manage:configs:endpoints' as SystemCapability,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(true);
+    });
+
+    it('returns false for a caller with no config capability at all', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.READ_USAGE,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(false);
+    });
+
+    it('returns false for an empty principals array', async () => {
+      const result = await methods.hasAnyConfigReadAccess({ principals: [] });
+      expect(result).toBe(false);
     });
   });
 });

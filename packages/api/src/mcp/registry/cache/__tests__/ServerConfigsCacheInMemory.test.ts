@@ -12,6 +12,7 @@ describe('ServerConfigsCacheInMemory Integration Tests', () => {
 
   // Test data
   const mockConfig1: ParsedServerConfig = {
+    type: 'stdio',
     command: 'node',
     args: ['server1.js'],
     env: { TEST: 'value1' },
@@ -19,6 +20,7 @@ describe('ServerConfigsCacheInMemory Integration Tests', () => {
   };
 
   const mockConfig2: ParsedServerConfig = {
+    type: 'stdio',
     command: 'python',
     args: ['server2.py'],
     env: { TEST: 'value2' },
@@ -26,6 +28,7 @@ describe('ServerConfigsCacheInMemory Integration Tests', () => {
   };
 
   const mockConfig3: ParsedServerConfig = {
+    type: 'stdio',
     command: 'node',
     args: ['server3.js'],
     url: 'http://localhost:3000',
@@ -178,6 +181,41 @@ describe('ServerConfigsCacheInMemory Integration Tests', () => {
 
       const result = await cache.get('server1');
       expect(result).toEqual(mockConfig3);
+    });
+  });
+
+  describe('replaceStub operation', () => {
+    const stub: ParsedServerConfig = { ...mockConfig1, inspectionFailed: true };
+
+    it('replaces the failed stub it was inspected from', async () => {
+      await cache.add('server1', stub);
+
+      await expect(cache.replaceStub('server1', mockConfig2, FIXED_TIME)).resolves.toEqual(
+        mockConfig2,
+      );
+      expect(await cache.get('server1')).toEqual(mockConfig2);
+    });
+
+    it('leaves an entry another writer already recovered, even within the same millisecond', async () => {
+      await cache.add('server1', stub);
+      await cache.update('server1', mockConfig3);
+
+      await expect(cache.replaceStub('server1', mockConfig2, FIXED_TIME)).resolves.toBeUndefined();
+      expect(await cache.get('server1')).toEqual(mockConfig3);
+    });
+
+    it('leaves a newer stub written after the inspected one', async () => {
+      await cache.add('server1', stub);
+      (Date.now as jest.Mock).mockReturnValueOnce(FIXED_TIME + 1);
+      await cache.update('server1', stub);
+
+      await expect(cache.replaceStub('server1', mockConfig2, FIXED_TIME)).resolves.toBeUndefined();
+      expect(await cache.get('server1')).toEqual({ ...stub, updatedAt: FIXED_TIME + 1 });
+    });
+
+    it('does not create a missing entry', async () => {
+      await expect(cache.replaceStub('server1', mockConfig2, FIXED_TIME)).resolves.toBeUndefined();
+      expect(await cache.get('server1')).toBeUndefined();
     });
   });
 

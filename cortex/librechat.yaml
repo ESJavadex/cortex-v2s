@@ -1,4 +1,4 @@
-version: 1.3.6
+version: 1.3.17
 cache: true
 interface:
   customWelcome: "Cortex · Operaciones V2S"

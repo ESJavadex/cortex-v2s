@@ -12,8 +12,8 @@
  *    exempts trusted domains from SSRF checks, including auto-discovery paths.
  */
 
-import * as http from 'http';
 import * as net from 'net';
+import * as http from 'http';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
 import type { Socket } from 'net';
 import type { OAuthTestServer } from './helpers/oauthTestServer';
@@ -142,7 +142,10 @@ describe('MCP OAuth SSRF protection', () => {
           clientInfo: {
             ...clientInfo,
             redirect_uris: ['http://localhost/callback'],
+            token_endpoint_auth_method: 'client_secret_post',
           },
+          storedTokenEndpoint: ssrfTokenUrl,
+          storedAuthMethods: ['client_secret_post'],
         },
         {},
         {
@@ -304,10 +307,10 @@ describe('MCP OAuth allowedDomains SSRF exemption for admin-trusted hosts', () =
   });
 
   it('should allow private revocationEndpoint when hostname is in allowedDomains', async () => {
-    const mockFetch = jest.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-    } as Response);
+    const mockFetch = Object.assign(
+      jest.fn().mockResolvedValue({ ok: true, status: 200 } as Response),
+      { preconnect: jest.fn() },
+    );
     const originalFetch = global.fetch;
     global.fetch = mockFetch;
 
@@ -333,14 +336,17 @@ describe('MCP OAuth allowedDomains SSRF exemption for admin-trusted hosts', () =
   });
 
   it('should allow localhost token_url in refreshOAuthTokens when localhost is in allowedDomains', async () => {
-    const mockFetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        access_token: 'new-access-token',
-        token_type: 'Bearer',
-        expires_in: 3600,
-      }),
-    } as Response);
+    const mockFetch = Object.assign(
+      jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          access_token: 'new-access-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        }),
+      } as Response),
+      { preconnect: jest.fn() },
+    );
     const originalFetch = global.fetch;
     global.fetch = mockFetch;
 
@@ -355,6 +361,8 @@ describe('MCP OAuth allowedDomains SSRF exemption for admin-trusted hosts', () =
             client_secret: 'client-secret',
             redirect_uris: ['http://localhost:3080/callback'],
           },
+          storedTokenEndpoint: 'http://localhost:8080/token',
+          storedAuthMethods: ['client_secret_basic'],
         },
         {},
         {

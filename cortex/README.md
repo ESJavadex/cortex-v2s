@@ -35,17 +35,21 @@ Los eventos, nombres, direcciones de documentación y métricas son simulados. E
 
 ## Arquitectura y configuración
 
-- `Dockerfile`: dependencias, compilación de los paquetes y React, runtime Node 22 sin privilegios. No usa una imagen precompilada del chat.
+- `Dockerfile`: dependencias, compilación de los paquetes y React, runtime Node 24.16.0 sin privilegios. No usa una imagen precompilada del chat.
 - `compose.yaml`: chat, MongoDB sin puerto publicado y mock MCP sin puerto publicado, con healthchecks y volúmenes independientes del Cortex anterior.
 - `librechat.yaml`: perfiles, instrucciones y herramientas MCP; GPT-6 Luna (`openai/gpt-6-luna`) vía OpenRouter para ambos perfiles. `reasoning_effort: none` habilita llamadas a herramientas en Chat Completions; se omiten temperatura y parámetros no soportados. Subida de archivos desactivada: este laboratorio consulta herramientas y no incluye servicio RAG.
 - `demo/`: dataset y servidor MCP «Zabbix V2S» de solo lectura; sustituible por un adaptador Zabbix real manteniendo las herramientas.
 - `../client/`: branding y componentes Cortex editados en código fuente (login, bienvenida, cabecera, paleta, favicon).
 - `tests/`: verificación en navegador y capturas; ver su README para pruebas con/sin generación.
 
-El fork conserva la licencia y los nombres internos necesarios para compatibilidad upstream. Los cambios de marca afectan la experiencia visible. Base upstream: `5a373825a5d451c1392a350a3bf292f43d7b8a87`. Remote `upstream`: LibreChat-AI/LibreChat; remote `origin`: ESJavadex/cortex-v2s.
+El fork conserva la licencia y los nombres internos necesarios para compatibilidad upstream. Los cambios de marca afectan la experiencia visible. Base upstream actualizada: [LibreChat v0.8.8](https://github.com/LibreChat-AI/LibreChat/releases/tag/v0.8.8), commit `e8f3be08623663d4ad7f7241e693c94469b63bb0` (backend y frontend del mismo tag). Configuración `1.3.17`. Se conserva la personalización Cortex sobre esa base. Remote `upstream`: LibreChat-AI/LibreChat; remote `origin`: ESJavadex/cortex-v2s.
 
 ## Siguiente integración real
 
 Reunir con Ismael: versión/API Zabbix, token de lectura acotado, grupo de hosts autorizado, ventana histórica, exportación de eventos y runbooks. Para pfSense: acceso a copia de logs con retención y campos acordados. Validar el proveedor/modelo y el tratamiento de datos antes de conectar información real. El mock no ejecuta cambios, bloqueos ni automatizaciones.
 
 El logotipo del conector Zabbix procede del [repositorio oficial de Zabbix](https://github.com/zabbix/zabbix). Compatibilidad de herramientas del modelo: [OpenAI Docs · GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna).
+
+## Actualizaciones
+
+La actualización a v0.8.8 conserva la identidad Cortex, el español predeterminado y las preferencias guardadas, la firma Javadex, los perfiles y el MCP Zabbix V2S. La clave interna del MCP sigue siendo `v2s` para conservar compatibilidad con conversaciones existentes. Antes de desplegar se guardó una copia local de MongoDB y la configuración en `~/.local/state/cortex-v2s/before-088/`; rama de respaldo `backup/cortex-before-upstream-088` e imagen `cortex-v2s:before-088`. Los respaldos no se publican en Git.

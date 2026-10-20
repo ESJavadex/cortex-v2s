@@ -6,6 +6,8 @@ services:
       context: ..
       dockerfile: cortex/Dockerfile
     env_file: .env
+    environment:
+      SCHEDULES_SINGLE_PROCESS: "true"
     ports:
       - "127.0.0.1:3082:3080"
       - "100.119.129.71:3082:3080"
